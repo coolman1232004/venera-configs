@@ -2,16 +2,16 @@ class Zaimanhua extends ComicSource {
   // 基础信息
   name = "再漫画";
   key = "zaimanhua";
-  version = "1.0.2";
-  minAppVersion = "1.0.0";
+  version = "1.0.3";
+  minAppVersion = "1.0.5";
   url =
-    "https://cdn.jsdelivr.net/gh/venera-app/venera-configs@main/zaimanhua.js";
+    "https://raw.githubusercontent.com/coolman1232004/venera-configs/main/zaimanhua.js";
 
   // 初始化请求头
   init() {
     this.headers = {
       "User-Agent": "Mozilla/5.0 (Linux; Android) Mobile",
-      "authorization": `Bearer ${this.loadData("token") || ""}`,
+      ...(this.loadData("token") ? { authorization: `Bearer ${this.loadData("token")}` } : {}),
     };
   }
   // 构建 URL
@@ -68,6 +68,7 @@ class Zaimanhua extends ComicSource {
     },
     logout: () => {
       this.deleteData("token");
+      delete this.headers.authorization;
     },
   };
 
@@ -337,12 +338,16 @@ class Zaimanhua extends ComicSource {
   comic = {
     loadInfo: async (id) => {
       const getFavoriteStatus = async (id) => {
+        if (!this.isLogged) return false;
         let res = await Network.get(
           this.buildUrl(`comic/sub/checkIsSub?objId=${id}&source=1`),
           this.headers
         );
+        // 过期的收藏凭据不应阻止读取公开漫画详情。
+        if (res.status === 401) return false;
         this.checkResponseStatus(res);
-        return JSON.parse(res.body).data.isSub;
+        const response = JSON.parse(res.body);
+        return response.errno === 0 && !!response.data?.isSub;
       };
       let results = await Promise.all([
         Network.get(
@@ -351,6 +356,7 @@ class Zaimanhua extends ComicSource {
         ),
         getFavoriteStatus.bind(this)(id),
       ]);
+      this.checkResponseStatus(results[0]);
       const response = JSON.parse(results[0].body);
       if (response.errno !== 0) throw new Error(response.errmsg || "加载失败");
       const data = response.data.data;
@@ -359,6 +365,7 @@ class Zaimanhua extends ComicSource {
         return (groups || []).reduce((result, group) => {
           const groupTitle = group.title || "默认";
           const chapters = (group.data || [])
+            .slice()
             .reverse()
             .map((ch) => [
               String(ch.chapter_id),
@@ -373,7 +380,7 @@ class Zaimanhua extends ComicSource {
       }
       // 分类标签
       const { authors, status, types } = data;
-      const tagMapper = (arr) => arr.map((t) => t.tag_name);
+      const tagMapper = (arr) => (arr || []).map((t) => t.tag_name);
       return {
         title: data.title,
         cover: data.cover,
@@ -394,9 +401,34 @@ class Zaimanhua extends ComicSource {
         this.buildUrl(`comic/chapter/${comicId}/${epId}`),
         this.headers
       );
-      const data = JSON.parse(res.body).data.data;
-      return { images: data.page_url_hd || data.page_url };
+      this.checkResponseStatus(res);
+      const response = JSON.parse(res.body);
+      if (response.errno !== 0) throw new Error(response.errmsg || "章节加载失败");
+      const data = response.data?.data;
+      const validUrls = (urls) => Array.isArray(urls)
+        ? urls.filter((url) => typeof url === "string" && url.length)
+          .map((url) => url.startsWith("//") ? "https:" + url : url) : [];
+      const hd = validUrls(data?.page_url_hd);
+      const normal = validUrls(data?.page_url);
+      const images = hd.length ? hd : normal;
+      if (!images.length) throw new Error("本章没有可阅读的图片");
+      return { images };
     },
+    onImageLoad: (imageKey, comicId, epId) => ({
+      url: imageKey,
+      headers: { "User-Agent": this.headers["User-Agent"], Referer: "https://www.zaimanhua.com/" },
+      // 图片链接带有效期，失败时重新获取签名，保留完整查询参数。
+      onLoadFailed: async () => {
+        const { images } = await this.comic.loadEp(comicId, epId);
+        const path = imageKey.split("?")[0];
+        const fresh = images.find((url) => url.split("?")[0] === path);
+        if (!fresh) throw new Error("图片链接已改变，请重新打开章节");
+        return {
+          url: fresh,
+          headers: { "User-Agent": this.headers["User-Agent"], Referer: "https://www.zaimanhua.com/" },
+        };
+      },
+    }),
     
     loadComments: async (comicId, subId, page, replyTo) => {
       try {

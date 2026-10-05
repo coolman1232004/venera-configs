@@ -5,9 +5,9 @@ class Baozi extends ComicSource {
   // 唯一标识符
   key = "baozi";
 
-  version = "1.1.7";
+  version = "1.1.8";
 
-  minAppVersion = "1.0.0";
+  minAppVersion = "1.0.5";
 
   // 更新链接
   url = "https://raw.githubusercontent.com/coolman1232004/venera-configs/main/baozi.js";
@@ -41,8 +41,6 @@ class Baozi extends ComicSource {
       options: [
         { value: "s1.bzcdn.net" },
         { value: "as-rsa1-usla.baozicdn.com" },
-        { value: "ascn-a3.bzcdn.net" },
-        { value: "asgb-a3.bzcdn.net" },
         { value: "as.baozimh.com" },
         { value: "s1.baozicdn.com" },
         { value: "", text: "默认" },
@@ -113,10 +111,37 @@ class Baozi extends ComicSource {
     url = this.absoluteUrl(url, base);
     const match = url.match(/^https?:\/\/([^/]+)(\/(?:w\d+\/)?[a-z]comic\/.*)$/);
     if (!match) return null;
-    const domain = this.loadSetting("cdn_domains") || match[1];
+    const domain = this.imageDomain(this.loadSetting("cdn_domains") || match[1]);
     const quality = this.loadSetting("image_quality") ?? this.settings.image_quality.default;
     const path = match[2].replace(/^\/w\d+(?=\/)/, "");
     return `https://${domain}${quality}${path}`;
+  }
+
+  imageDomain(domain) {
+    // 兼容旧设置中的失效 CDN，保留仍可使用的自选线路。
+    return ["ascn-a3.bzcdn.net", "asgb-a3.bzcdn.net"].includes(domain)
+      ? "s1.bzcdn.net" : domain;
+  }
+
+  imageConfig(imageKey) {
+    const match = imageKey.match(/^https?:\/\/([^/]+)(\/(?:w\d+\/)?[a-z]comic\/.*)$/);
+    if (!match) return { url: imageKey, headers: this.headers };
+    const primary = this.imageDomain(match[1]);
+    const originalPath = match[2].replace(/^\/w\d+(?=\/)/, "");
+    const candidates = [...new Set([
+      `https://${primary}${match[2]}`,
+      `https://s1.bzcdn.net${match[2]}`,
+      `https://as.baozimh.com${match[2]}`,
+      `https://s1.bzcdn.net${originalPath}`,
+      `https://as.baozimh.com${originalPath}`,
+    ])];
+    const configAt = (index) => ({
+      url: candidates[index],
+      headers: this.headers,
+      ...(index + 1 < candidates.length
+        ? { onLoadFailed: () => configAt(index + 1) } : {}),
+    });
+    return configAt(0);
   }
 
   isComicImage(url, comicId) {
@@ -596,6 +621,6 @@ class Baozi extends ComicSource {
         throw error;
       }
     },
-    onImageLoad: () => ({ headers: this.headers }),
+    onImageLoad: (imageKey) => this.imageConfig(imageKey),
   };
 }

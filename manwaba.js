@@ -8,15 +8,44 @@ class ManWaBa extends ComicSource {
   // unique id of the source
   key = "manwaba";
 
-  version = "1.0.3";
+  version = "1.0.4";
 
   minAppVersion = "1.4.0";
 
   // update url
-  url = "https://cdn.jsdelivr.net/gh/venera-app/venera-configs@main/manwaba.js";
+  url = "https://raw.githubusercontent.com/coolman1232004/venera-configs/main/manwaba.js";
 
   //修改域名不能用问题
-  api = "https://mwuu.cc/api";
+  api = "https://manwaxu.cc/api";
+
+  headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36",
+    Referer: "https://manwaxu.cc/",
+  };
+
+  decryptImage(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const isImage = (v) => (v[0] === 0xff && v[1] === 0xd8)
+      || (v[0] === 0x89 && v[1] === 0x50)
+      || (v[0] === 0x47 && v[1] === 0x49)
+      || (v[0] === 0x52 && v[1] === 0x49);
+    if (isImage(bytes)) return bytes.buffer;
+    if (bytes.length <= 16 || (bytes.length - 16) % 16 !== 0) {
+      throw new Error("图片数据无效，请重新加载章节");
+    }
+    // 与网站 BaseUtil.getSecureImageUrl 一致：前 16 字节是 IV。
+    const key = Convert.encodeUtf8("0B6666A0-BB59-1381-B746-a0E4C9AC");
+    const decoded = new Uint8Array(Convert.decryptAesCbc(
+      bytes.slice(16).buffer, key, bytes.slice(0, 16).buffer
+    ));
+    const padding = decoded[decoded.length - 1];
+    if (padding < 1 || padding > 16
+      || !decoded.slice(-padding).every((value) => value === padding)
+      || !isImage(decoded)) {
+      throw new Error("图片解密失败，请确认网站是否更改了图片格式");
+    }
+    return decoded.slice(0, -padding).buffer;
+  }
 
   init() {
     /**
@@ -34,15 +63,20 @@ class ManWaBa extends ComicSource {
     ) => {
       if (params) {
         let params_str = Object.keys(params)
-          .map((key) => `${key}=${params[key]}`)
+          .map((key) => `${encodeURIComponent(key)}=${encodeURIComponent(params[key])}`)
           .join("&");
         url += `?${params_str}`;
       }
+      headers = { ...this.headers, ...headers };
+      if (payload !== undefined) headers["Content-Type"] = "application/json";
       let res = await Network.sendRequest(method, url, headers, payload);
       if (res.status !== 200) {
-        throw `Invalid status code: ${res.status}, body: ${res.body}`;
+        throw new Error(`接口请求失败: ${res.status}`);
       }
       let json = JSON.parse(res.body);
+      if (json.code !== undefined && json.code !== 200) {
+        throw new Error(json.msg || `接口错误: ${json.code}`);
+      }
       return json;
     };
     this.logger = {
@@ -221,7 +255,7 @@ class ManWaBa extends ComicSource {
         "19r": "/cate/19plus",
         "台版": "/cate/taiwanver",
       };
-      let url = this.api + pathMap[param] || "/cate";
+      let url = this.api + (pathMap[param] || "/cate");
       let payload = JSON.stringify({
         page: {
           page: page,
@@ -356,17 +390,17 @@ class ManWaBa extends ComicSource {
       let pageRes = await this.fetchJson(chapterApi, { params });
       let total = pageRes.pagination.total;
 
-      let chapterRes = await this.fetchJson(chapterApi, {
-        params: {
-          ...params,
-          pageSize: total,
-        },
-      });
-      let chapterList = chapterRes.data;
       let chapters = new Map();
-      chapterList.forEach((item) => {
-        chapters.set(item.id.toString(), item.title.toString());
-      });
+      for (let page = 1; chapters.size < total; page++) {
+        const chapterRes = await this.fetchJson(chapterApi, {
+          params: { ...params, page, pageSize: 100 },
+        });
+        const before = chapters.size;
+        for (const item of chapterRes.data || []) {
+          chapters.set(item.id.toString(), item.title.toString());
+        }
+        if (chapters.size === before) throw new Error("章节列表不完整，请重试");
+      }
 
       return new ComicDetails({
         title: data.title.toString(),
@@ -389,24 +423,34 @@ class ManWaBa extends ComicSource {
      */
     loadEp: async (comicId, epId) => {
       let imgApi = `${this.api}/comic/image/${epId}`;
-      let params = {
-        page: 1,
-        pageSize: 1,
+      const params = {
+        page_size: 100,
         imageSource: "https://tu.mhttu.cc",
       };
-      let pageNum = await this.fetchJson(imgApi, {
-        params,
-      }).then((res) => res.data.pagination.total);
-      let imageRes = await this.fetchJson(imgApi, {
-        params: {
-          ...params,
-          page_size: pageNum,
-        },
-      }).then((res) => res.data.images);
-      let images = imageRes.map((item) => item.url);
+      const images = [];
+      const seen = new Set();
+      for (let page = 1; ; page++) {
+        const data = (await this.fetchJson(imgApi, { params: { ...params, page } })).data;
+        const before = images.length;
+        for (const item of data.images || []) {
+          if (item.url && !seen.has(item.url)) {
+            seen.add(item.url);
+            images.push(item.url);
+          }
+        }
+        const total = Number(data.pagination?.total || 0);
+        if (!total || images.length >= total) break;
+        if (images.length === before) throw new Error("章节图片列表不完整，请重试");
+      }
+      if (!images.length) throw new Error("本章没有可阅读的图片");
       return {
         images,
       };
     },
+    onImageLoad: (imageKey) => ({
+      url: imageKey,
+      headers: this.headers,
+      onResponse: (buffer) => this.decryptImage(buffer),
+    }),
   };
 }
