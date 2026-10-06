@@ -8,7 +8,7 @@ class ManWaBa extends ComicSource {
   // unique id of the source
   key = "manwaba";
 
-  version = "1.0.4";
+  version = "1.0.5";
 
   minAppVersion = "1.4.0";
 
@@ -22,6 +22,20 @@ class ManWaBa extends ComicSource {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36",
     Referer: "https://manwaxu.cc/",
   };
+
+  coverUrl(url) {
+    // 使用新的缓存键，避免 Venera 继续读取旧版缓存的加密封面。
+    return typeof url === "string" && url
+      ? url.split("#")[0] + "#venera-manwaba-cover-1" : url;
+  }
+
+  imageConfig(imageKey) {
+    return {
+      url: imageKey.split("#")[0],
+      headers: this.headers,
+      onResponse: (buffer) => this.decryptImage(buffer),
+    };
+  }
 
   decryptImage(buffer) {
     const bytes = new Uint8Array(buffer);
@@ -127,15 +141,15 @@ class ManWaBa extends ComicSource {
           最新更新: data.xuanhuanList,
           热门收藏: data.xiaoyuanList,
         };
-        function parseComic(comic) {
+        const parseComic = (comic) => {
           return new Comic({
             id: comic.id.toString(),
             title: comic.title,
             subTitle: comic.author,
-            cover: comic.pic,
+            cover: this.coverUrl(comic.pic),
             tags: comic.tags.split(","),
           });
-        }
+        };
         let result = {};
         for (let key in magnaList) {
           result[key] = magnaList[key].map(parseComic);
@@ -289,17 +303,17 @@ class ManWaBa extends ComicSource {
         payload,
       }).then((res) => res.data.list);
 
-      function parseComic(comic) {
+      const parseComic = (comic) => {
         return new Comic({
           id: comic.url.split("/").pop(),
           title: comic.title,
           subTitle: comic.author,
-          cover: comic.pic,
+          cover: this.coverUrl(comic.pic),
           tags: comic.tags.split(","),
           description: comic.intro,
           status: comic.status == 0 ? "连载中" : "已完结",
         });
-      }
+      };
       return {
         comics: data.map(parseComic),
         maxPage: 100,
@@ -353,7 +367,7 @@ class ManWaBa extends ComicSource {
           id: item.id.toString(),
           title: item.title,
           subTitle: item.author,
-          cover: item.cover,
+          cover: this.coverUrl(item.cover),
           tags: item.tags.split(","),
           description: item.description,
           status: item.status == 0 ? "连载中" : "已完结",
@@ -405,7 +419,7 @@ class ManWaBa extends ComicSource {
       return new ComicDetails({
         title: data.title.toString(),
         subTitle: data.author.toString(),
-        cover: data.cover,
+        cover: this.coverUrl(data.cover),
         tags: {
           类型: data.tags.split(","),
           状态: data.status == 0 ? "连载中" : "已完结",
@@ -447,10 +461,7 @@ class ManWaBa extends ComicSource {
         images,
       };
     },
-    onImageLoad: (imageKey) => ({
-      url: imageKey,
-      headers: this.headers,
-      onResponse: (buffer) => this.decryptImage(buffer),
-    }),
+    onImageLoad: (imageKey) => this.imageConfig(imageKey),
+    onThumbnailLoad: (imageKey) => this.imageConfig(imageKey),
   };
 }
