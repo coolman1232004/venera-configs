@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const { execFileSync } = require("child_process");
+const fs = require("fs");
 const path = require("path");
 
 const repoRoot = path.resolve(__dirname, "..");
@@ -26,7 +27,8 @@ for (const file of files) {
 }
 
 function isConfigFile(filePath) {
-  if (!filePath.endsWith(".js")) {
+  if (path.dirname(filePath) !== "." || !filePath.endsWith(".js")
+      || !fs.existsSync(path.join(repoRoot, filePath))) {
     return false;
   }
   const baseName = path.basename(filePath);

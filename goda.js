@@ -116,12 +116,12 @@ class Goda extends ComicSource {
   // 源唯一标识
   key = "goda"
 
-  version = "1.2.1"
+  version = "1.2.2"
 
   minAppVersion = "1.4.0"
 
   // 更新地址
-  url = "https://cdn.jsdelivr.net/gh/venera-app/venera-configs@main/goda.js"
+  url = "https://raw.githubusercontent.com/coolman1232004/venera-configs/main/goda.js"
 
   settings = {
     domains: {
@@ -135,9 +135,14 @@ class Goda extends ComicSource {
       default: "v2.apikk.top"
     },
     image: {
-      title: "图片域名",
+      title: "章节图片域名",
       type: "input",
       default: "c-nd3-1.6wm.top"
+    },
+    cover_image: {
+      title: "封面图片域名（留空使用网页域名）",
+      type: "input",
+      default: "c-nc-1.6wm.top"
     }
   }
 
@@ -160,17 +165,58 @@ class Goda extends ComicSource {
     };
   }
 
+  resolveCover(url) {
+    if (typeof url !== "string" || !url.trim()) return "";
+    url = url.trim().split("#")[0];
+    // 网站部分页面使用带 url 参数的图片代理，取回真正的图片地址。
+    const proxy = url.match(/[?&]url=([^&#]+)/);
+    if (proxy) {
+      try {
+        const original = decodeURIComponent(proxy[1].replace(/\+/g, " "));
+        if (/^(?:https?:)?\/\//i.test(original)) url = original;
+      } catch (_) {}
+    }
+    if (url.startsWith("//")) url = "https:" + url;
+    else if (!/^https?:\/\//i.test(url)) {
+      url = this.baseUrl + (url.startsWith("/") ? "" : "/") + url;
+    }
+    const cdn = url.match(/^https?:\/\/c-nc-[a-z0-9-]+\.6wm\.top(\/.*)$/i);
+    const domain = (this.loadSetting("cover_image") ?? this.settings.cover_image.default)
+      .trim().replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+    if (cdn && domain) url = `https://${domain}${cdn[1]}`;
+    return url;
+  }
+
+  coverUrl(url) {
+    const resolved = this.resolveCover(url);
+    // 换用新缓存键，不再重用旧版缓存的错误封面响应。
+    return resolved ? resolved + "#venera-goda-cover-1" : "";
+  }
+
+  coverResponse(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const text = (offset, length) => String.fromCharCode(...bytes.slice(offset, offset + length));
+    const isImage = (bytes[0] === 0xff && bytes[1] === 0xd8)
+      || (bytes[0] === 0x89 && text(1, 3) === "PNG")
+      || /^GIF8[79]a$/.test(text(0, 6))
+      || (text(0, 4) === "RIFF" && text(8, 4) === "WEBP")
+      || text(4, 4) === "ftyp";
+    if (!isImage) throw new Error("封面响应不是图片，请检查封面域名或网络后重试");
+    return bytes.buffer;
+  }
+
   parseComics(doc) {
     const result = [];
     for (let item of doc.querySelectorAll(".pb-2")) {
       const link = item.querySelector("a");
       const titleEl = item.querySelector("h3");
       const img = item.querySelector("img");
-      if (link && titleEl && img && link.attributes["href"] && img.attributes["src"]) {
+      const cover = img && (img.attributes["data-src"] || img.attributes["src"]);
+      if (link && titleEl && cover && link.attributes["href"]) {
         result.push(new Comic({
           id: link.attributes["href"],
           title: titleEl.text,
-          cover: img.attributes["src"]
+          cover: this.coverUrl(cover)
         }));
       }
     }
@@ -195,7 +241,8 @@ class Goda extends ComicSource {
           result[0].comics.push(new Comic({
             id: item.attributes["href"],
             title: item.querySelector("h3").text,
-            cover: item.querySelector("img").attributes["src"]
+            cover: this.coverUrl(item.querySelector("img").attributes["data-src"]
+              || item.querySelector("img").attributes["src"])
           }))
         }
         const cardlists = document.querySelectorAll(".cardlist");
@@ -368,7 +415,9 @@ class Goda extends ComicSource {
   comic = {
     onThumbnailLoad: (url) => {
       return {
-        headers: this.headers
+        url: this.resolveCover(url),
+        headers: { ...this.headers, Referer: this.baseUrl + "/" },
+        onResponse: (buffer) => this.coverResponse(buffer)
       }
     },
     loadInfo: async (id) => {
@@ -382,7 +431,8 @@ class Goda extends ComicSource {
       const title = titleEl ? (titleEl.text || "").trim().split("   ")[0] : "";
 
       const coverEl = document.querySelector(".object-cover");
-      const cover = (coverEl && coverEl.attributes && coverEl.attributes["src"]) || "";
+      const cover = this.coverUrl(coverEl && coverEl.attributes
+        && (coverEl.attributes["data-src"] || coverEl.attributes["src"]));
 
       const descEl = document.querySelector("p.text-medium");
       const description = descEl ? (descEl.text || "") : "";
@@ -445,11 +495,12 @@ class Goda extends ComicSource {
         const recLink = item.querySelector("a");
         const recTitle = item.querySelector("h3");
         const recImg = item.querySelector("img");
-        if (recLink && recTitle && recImg && recLink.attributes["href"] && recImg.attributes["src"]) {
+        const recCover = recImg && (recImg.attributes["data-src"] || recImg.attributes["src"]);
+        if (recLink && recTitle && recCover && recLink.attributes["href"]) {
           recommend.push(new Comic({
             id: recLink.attributes["href"],
             title: recTitle.text,
-            cover: recImg.attributes["src"]
+            cover: this.coverUrl(recCover)
           }));
         }
       }

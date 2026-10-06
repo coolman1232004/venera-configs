@@ -44,6 +44,10 @@ for (const fileName of [...touchedFiles].sort()) {
   const baseEntry = baseByFile.get(fileName);
 
   if (!currentEntry) {
+    // Removing a source is valid only when both its file and index entry are removed.
+    if (baseEntry && !fs.existsSync(filePath)) {
+      continue;
+    }
     errors.push(`${fileName}: missing entry in index.json.`);
     continue;
   }
@@ -145,7 +149,7 @@ function diffIndexEntries(baseByFile, currentByFile) {
 }
 
 function isConfigFile(filePath) {
-  if (!filePath.endsWith(".js")) {
+  if (path.dirname(filePath) !== "." || !filePath.endsWith(".js")) {
     return false;
   }
   const baseName = path.basename(filePath);
